@@ -466,7 +466,7 @@ def update_google_table(release, add_flag, update_status_flag):
 
 
 release = 'OKR_20250406_ATM' # Метка релиза
-update_google_table(release, True, True)
+update_google_table(release, add_flag=True, update_status_flag=True)
 
 
 
