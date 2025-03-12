@@ -216,10 +216,16 @@ def filter_release_data(df: pd.DataFrame, release: str, excluded_statuses: list)
     """
     try:
         # Применяем фильтры
-        filtered_df = df[
-            (df['Релиз'] == release) &
-            (~df['Статус'].isin(excluded_statuses))
-            ].copy()
+        if release == '':
+            filtered_df = df[
+                (~df['Статус'].isin(excluded_statuses))
+                ].copy()
+
+        else:
+            filtered_df = df[
+                (df['Релиз'] == release) &
+                (~df['Статус'].isin(excluded_statuses))
+                ].copy()
 
         # Сброс индексов для красоты
         return filtered_df.reset_index(drop=True)
@@ -382,7 +388,91 @@ def get_changed_status_records(df_filtered, df_sfera) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def update_google_sheet(df, spreadsheet_url ,sheet_name) -> None:
+def get_changed_release_records(df_filtered, df_sfera) -> pd.DataFrame:
+    """
+    Возвращает записи из df_filtered, которые:
+    1) Имеют совпадающие номера задач с df_sfera
+    2) Имеют разные релизы
+    """
+    try:
+        # Проверка наличия необходимых колонок
+        required_columns = ['Задача', 'Релиз']
+        if not all(col in df_filtered.columns for col in required_columns):
+            raise KeyError("В df_filtered отсутствуют необходимые колонки")
+
+        if not all(col in df_sfera.columns for col in required_columns):
+            raise KeyError("В df_sfera отсутствуют необходимые колонки")
+
+        # Объединяем DataFrame по номеру задачи
+        merged = pd.merge(
+            df_filtered[['Задача', 'Релиз']],
+            df_sfera[['Задача', 'Релиз']],
+            on='Задача',
+            suffixes=('_filtered', '_sfera'),
+            how='inner'
+        )
+
+        # Фильтруем записи с разными релизами
+        changed_release = merged[merged['Релиз_filtered'] != merged['Релиз_sfera']]
+
+        # Возвращаем полные записи из df_filtered
+        result_df = df_sfera[df_sfera['Задача'].isin(changed_release['Задача'])]
+
+        return result_df.reset_index(drop=True)
+
+    except KeyError as e:
+        print(f"Ошибка: {str(e)}")
+        return pd.DataFrame()
+    except Exception as e:
+        print(f"Неизвестная ошибка: {str(e)}")
+        return pd.DataFrame()
+
+
+def get_excluded_tasks_from_release(df_filtered, df_sfera) -> pd.DataFrame:
+    """
+    Возвращает записи из df_filtered, которых нет в df_sfera
+
+    Параметры:
+    df_filtered - исходный датафрейм с новыми данными
+    df_sfera - датафрейм для сравнения (базовые данные)
+
+    Возвращает:
+    Датафрейм с уникальными записями из df_filtered
+    """
+    try:
+        # Проверка наличия колонки "Задача"
+        if 'Задача' not in df_filtered.columns:
+            raise KeyError("В df_filtered отсутствует колонка 'Задача'")
+
+        if 'Задача' not in df_sfera.columns:
+            raise KeyError("В df_sfera отсутствует колонка 'Задача'")
+
+        # Объединяем с индикатором источника
+        merged = pd.merge(
+            df_filtered[['Задача']],
+            df_sfera[['Задача']],
+            on='Задача',
+            how='outer',
+            indicator=True
+        )
+
+        # Фильтруем записи, которые есть только в df_filtered
+        new_tasks = merged[merged['_merge'] == 'left_only']
+
+        # Получаем полные записи из исходного df_filtered
+        result_df = df_filtered[df_filtered['Задача'].isin(new_tasks['Задача'])]
+
+        return result_df.drop_duplicates().reset_index(drop=True)
+
+    except KeyError as e:
+        print(f"Ошибка: {str(e)}")
+        return pd.DataFrame()
+    except Exception as e:
+        print(f"Неизвестная ошибка: {str(e)}")
+        return pd.DataFrame()
+
+
+def update_status_in_google_sheet(df, spreadsheet_url ,sheet_name) -> None:
     """
     Обновляет статусы и исполнителей в Google Таблице на основе данных из result
     """
@@ -436,7 +526,114 @@ def update_google_sheet(df, spreadsheet_url ,sheet_name) -> None:
         raise RuntimeError(f"Ошибка: {str(e)}")
 
 
-def update_google_table(release, add_flag, update_status_flag):
+def update_releases_in_google_sheet(df, spreadsheet_url, sheet_name) -> None:
+    """
+    Обновляет релизы в Google Таблице на основе данных из df
+    """
+    global _client
+
+    if _client is None:
+        raise RuntimeError("Сначала выполните подключение через connect_to__google_sheets()")
+
+    try:
+        # Проверка наличия необходимых колонок в DataFrame
+        if 'Задача' not in df.columns or 'Релиз' not in df.columns:
+            raise ValueError("DataFrame должен содержать колонки 'Задача' и 'Релиз'")
+
+        spreadsheet = _client.open_by_url(spreadsheet_url)
+        worksheet = spreadsheet.worksheet(sheet_name)
+
+        # Получаем все задачи из колонки B (Задачи)
+        records = worksheet.get_all_records()
+        tasks = [row['Задача'] for row in records]
+
+        # Подготавливаем пакетное обновление
+        updates = []
+
+        for idx, row in df.iterrows():
+            task = row['Задача']
+            new_release = row['Релиз']
+
+            try:
+                # Находим индекс строки (нумерация с 1)
+                sheet_row = tasks.index(task) + 2  # +2: заголовок + 0-based индекс
+
+                # Формируем обновление для релиза (колонка A)
+                updates.append({
+                    'range': f'A{sheet_row}',  # Предполагаем, что релиз в колонке A
+                    'values': [[new_release]]
+                })
+
+            except ValueError:
+                print(f"Задача {task} не найдена в таблице")
+                continue
+
+        # Выполняем обновление
+        if updates:
+            worksheet.batch_update(updates)
+            print(f"Обновлено релизов: {len(updates)}")
+
+    except APIError as e:
+        raise RuntimeError(f"Ошибка Google API: {str(e)}")
+    except Exception as e:
+        raise RuntimeError(f"Ошибка: {str(e)}")
+
+
+def mark_tasks_as_no_release(df, spreadsheet_url, sheet_name, release_column: str = 'A') -> None:
+    """
+    Устанавливает значение релиза 'OKR_NO_RELEASE' для всех задач из df
+
+    Параметры:
+    df - DataFrame с задачами для обновления (должен содержать колонку 'Задача')
+    spreadsheet_url - URL Google-таблицы
+    sheet_name - название листа
+    release_column - буква колонки с релизом (по умолчанию 'A')
+    """
+    global _client
+
+    if _client is None:
+        raise RuntimeError("Сначала выполните подключение через connect_to_google_sheets()")
+
+    try:
+        # Проверка наличия колонки 'Задача'
+        if 'Задача' not in df.columns:
+            raise ValueError("DataFrame должен содержать колонку 'Задача'")
+
+        spreadsheet = _client.open_by_url(spreadsheet_url)
+        worksheet = spreadsheet.worksheet(sheet_name)
+
+        # Получаем список всех задач
+        records = worksheet.get_all_records()
+        tasks = [row['Задача'] for row in records]
+
+        # Подготавливаем обновления
+        updates = []
+        fixed_release = "OKR_NO_RELEASE"
+
+        for idx, row in df.iterrows():
+            task = row['Задача']
+
+            try:
+                sheet_row = tasks.index(task) + 2  # +2 для заголовка и 0-based индекса
+                updates.append({
+                    'range': f'{release_column}{sheet_row}',
+                    'values': [[fixed_release]]
+                })
+            except ValueError:
+                print(f"Задача {task} не найдена, пропускаем")
+                continue
+
+        if updates:
+            worksheet.batch_update(updates)
+            print(f"Обновлено задач: {len(updates)}")
+
+    except APIError as e:
+        raise RuntimeError(f"Ошибка Google API: {str(e)}")
+    except Exception as e:
+        raise RuntimeError(f"Ошибка: {str(e)}")
+
+
+def update_google_table(release, add_flag, update_status_flag, update_releases_flag, mark_no_release_flag):
     df_sfera = get_dataframe(release)
 
     # Подключение к API
@@ -454,7 +651,7 @@ def update_google_table(release, add_flag, update_status_flag):
         add_filtered_records(spreadsheet_url=spreadsheetUrl, sheet_name=SHEET_NAME, result_df=result_df)
 
     # Отбираем задачи только по релизу
-    df_filtered = filter_release_data(df=df_google, release=release,
+    df_filtered = filter_release_data(df=df_google, release='',
                                       excluded_statuses=['Бэклог', 'Отмена', 'Блок', 'Готово', 'Поставка'])
 
     # Обновляем статус по исполнителю (только для статусов Аналитика, Разработк, Тестирование)
@@ -462,11 +659,28 @@ def update_google_table(release, add_flag, update_status_flag):
     print(df_changed_status)
 
     if update_status_flag:
-        update_google_sheet(df=df_changed_status, spreadsheet_url=spreadsheetUrl, sheet_name=SHEET_NAME)
+        update_status_in_google_sheet(df=df_changed_status, spreadsheet_url=spreadsheetUrl, sheet_name=SHEET_NAME)
+
+    # Обновляем релиз (только для статусов Аналитика, Разработк, Тестирование)
+    df_changed_release = get_changed_release_records(df_filtered, df_sfera)
+    print(df_changed_release)
+
+    if update_releases_flag:
+        update_releases_in_google_sheet(df=df_changed_release, spreadsheet_url=spreadsheetUrl, sheet_name=SHEET_NAME)
+
+    # Отбираем задачи только по релизу
+    df_filtered = filter_release_data(df=df_google, release=release,
+                                      excluded_statuses=['Бэклог', 'Отмена', 'Блок', 'Готово', 'Поставка'])
+
+    df_excluded_tasks_from_release = get_excluded_tasks_from_release(df_filtered, df_sfera)
+    print(df_excluded_tasks_from_release)
+
+    if mark_no_release_flag:
+        mark_tasks_as_no_release(df=df_excluded_tasks_from_release, spreadsheet_url=spreadsheetUrl, sheet_name=SHEET_NAME)
 
 
 release = 'OKR_20250406_ATM' # Метка релиза
-update_google_table(release, add_flag=True, update_status_flag=True)
+update_google_table(release, add_flag=True, update_status_flag=True, update_releases_flag=True, mark_no_release_flag=True)
 
 
 
