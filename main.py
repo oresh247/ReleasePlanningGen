@@ -633,6 +633,26 @@ def mark_tasks_as_no_release(df, spreadsheet_url, sheet_name, release_column: st
         raise RuntimeError(f"Ошибка: {str(e)}")
 
 
+import pandas as pd
+
+
+def save_df_to_excel(df, output_file: str = 'data/output.xlsx') -> None:
+    """
+    Сохраняет данные из Google Sheets в Excel файл
+
+    Параметры:
+    output_file - путь к выходному Excel файлу
+    """
+    try:
+        # Сохраняем в Excel
+        df.to_excel(output_file, index=False, engine='openpyxl')
+        print(f"Данные из googl таблицы успешно сохранены в файл: {output_file}")
+
+    except Exception as e:
+        print(f"Ошибка при сохранении в Excel: {str(e)}")
+        raise
+
+
 def update_google_table(release, add_flag, update_status_flag, update_releases_flag, mark_no_release_flag):
     df_sfera = get_dataframe(release)
 
@@ -641,9 +661,12 @@ def update_google_table(release, add_flag, update_status_flag, update_releases_f
 
     # Получение данных
     df_google = get_sheet_as_dataframe(spreadsheet_url=spreadsheetUrl, sheet_name=SHEET_NAME)
+    # Сохранение в CSV
+    save_df_to_excel(df_google, 'data/output.xlsx')
 
     # Найти записи, которых нет в таблице google
     result_df = get_unique_tasks(df_sfera, df_google)
+    print("Записи, которых нет в таблице google:")
     print(result_df)
 
     if add_flag:
@@ -656,6 +679,7 @@ def update_google_table(release, add_flag, update_status_flag, update_releases_f
 
     # Обновляем статус по исполнителю (только для статусов Аналитика, Разработк, Тестирование)
     df_changed_status = get_changed_status_records(df_filtered, df_sfera)
+    print("Обновлен статус по исполнителю (только для статусов Аналитика, Разработк, Тестирование)")
     print(df_changed_status)
 
     if update_status_flag:
@@ -663,6 +687,7 @@ def update_google_table(release, add_flag, update_status_flag, update_releases_f
 
     # Обновляем релиз (только для статусов Аналитика, Разработк, Тестирование)
     df_changed_release = get_changed_release_records(df_filtered, df_sfera)
+    print("Обновлен релиз (только для статусов Аналитика, Разработк, Тестирование)")
     print(df_changed_release)
 
     if update_releases_flag:
@@ -673,6 +698,7 @@ def update_google_table(release, add_flag, update_status_flag, update_releases_f
                                       excluded_statuses=['Бэклог', 'Отмена', 'Блок', 'Готово', 'Поставка'])
 
     df_excluded_tasks_from_release = get_excluded_tasks_from_release(df_filtered, df_sfera)
+    print("Исключены в google таблице из релиза")
     print(df_excluded_tasks_from_release)
 
     if mark_no_release_flag:
